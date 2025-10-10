@@ -1,0 +1,577 @@
+--!strict
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local LOCAL_PLAYER = Players.LocalPlayer
+
+if not LOCAL_PLAYER then
+    return
+end
+
+local CONFIG = {
+    GROUP_IDS = {
+        693335996, -- "da entairn staff team"
+    },
+
+    NOTIFICATION_BACKGROUND_OPACITY = 0.6,
+    NOTIFICATION_BASE_WIDTH = 300,
+    NOTIFICATION_BASE_HEIGHT = 100,
+    NOTIFICATION_OVERALL_SCALE = 0.8,
+    NOTIFICATION_TITLE_TEXT_AREA_HEIGHT_PIXELS = 28,
+    NOTIFICATION_DETAILS_TEXT_AREA_HEIGHT_PIXELS = 50,
+    SHOW_DISPLAY_NAME = true,
+    SHOW_MOD_ID = true,
+    BACKGROUND_BLUR_INTENSITY = 8,
+    MOD_JOINED_NOTIFICATION_DURATION = 5,
+    MOD_LEFT_NOTIFICATION_DURATION = 4,
+    MOD_COUNT_NOTIFICATION_DURATION = 5,
+    STARTUP_MESSAGE_DURATION = 3,
+    STARTUP_MESSAGE_FADE_DURATION = 1,
+    AUTO_SHOOT_DELAY = 0.05,
+    MAX_NAMES_IN_COUNT_NOTIFICATION = 5,
+}
+
+local SCALED_DIMENSIONS = {
+    FRAME_WIDTH = CONFIG.NOTIFICATION_BASE_WIDTH * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    FRAME_HEIGHT = CONFIG.NOTIFICATION_BASE_HEIGHT * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    PADDING_HORIZONTAL = 10 * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    PADDING_VERTICAL = 10 * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    AVATAR_OFFSET_LEFT = 10 * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    AVATAR_SIZE = 60 * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    AVATAR_CENTER_Y_OFFSET = 30 * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    TITLE_X_OFFSET = 80 * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    TITLE_Y_OFFSET = 5 * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    TITLE_AREA_HEIGHT = CONFIG.NOTIFICATION_TITLE_TEXT_AREA_HEIGHT_PIXELS * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    DETAILS_X_OFFSET = 80 * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    DETAILS_Y_OFFSET = 5 * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    DETAILS_AREA_HEIGHT = CONFIG.NOTIFICATION_DETAILS_TEXT_AREA_HEIGHT_PIXELS * CONFIG.NOTIFICATION_OVERALL_SCALE,
+    UI_CORNER_RADIUS = UDim.new(0, 8 * CONFIG.NOTIFICATION_OVERALL_SCALE)
+}
+
+local AntiMod = {}
+
+local activeBlurCount = 0
+local globalBlurEffect = nil
+local blurTween = nil
+local onlineMods = {}
+
+function AntiMod.updateGlobalBlur()
+    if not LOCAL_PLAYER then return end
+
+    if not globalBlurEffect or not globalBlurEffect.Parent or globalBlurEffect.Parent ~= game.Lighting then
+        if globalBlurEffect and globalBlurEffect.Parent then
+            globalBlurEffect:Destroy()
+            globalBlurEffect = nil
+        end
+        globalBlurEffect = Instance.new("BlurEffect")
+        globalBlurEffect.Name = "AntiModGlobalBlur"
+        globalBlurEffect.Size = 0
+        globalBlurEffect.Parent = game.Lighting
+    end
+
+    local targetSize = (activeBlurCount > 0) and CONFIG.BACKGROUND_BLUR_INTENSITY or 0
+    local tweenInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+    if blurTween then
+        blurTween:Cancel()
+        blurTween = nil
+    end
+
+    if globalBlurEffect.Size ~= targetSize then
+        blurTween = TweenService:Create(globalBlurEffect, tweenInfo, {Size = targetSize})
+        blurTween:Play()
+        blurTween.Completed:Connect(function()
+            blurTween = nil
+            if activeBlurCount == 0 and globalBlurEffect and globalBlurEffect.Size == 0 then
+                globalBlurEffect:Destroy()
+                globalBlurEffect = nil
+            end
+        end)
+    else
+        if activeBlurCount == 0 and globalBlurEffect and globalBlurEffect.Size == 0 then
+            globalBlurEffect:Destroy()
+            globalBlurEffect = nil
+        end
+    end
+end
+
+function AntiMod.isMemberOfMonitoredGroup(player: Player): (boolean, number?, number?, string?)
+    local success, isMember, groupId, rank, role = pcall(function()
+        for _, currentGroupId in ipairs(CONFIG.GROUP_IDS) do
+            if player:IsInGroup(currentGroupId) then
+                local playerRank = player:GetRankInGroup(currentGroupId)
+                local playerRole = player:GetRoleInGroup(currentGroupId)
+                return true, currentGroupId, playerRank, playerRole
+            end
+        end
+        return false, nil, nil, nil
+    end)
+
+    if not success then
+        return false, nil, nil, nil
+    else
+        return isMember, groupId, rank, role
+    end
+end
+
+function AntiMod.showCustomNotification(title: string, text: string, thumbnailUrl: string, duration: number, offsetIndex: number)
+    local playerGui = LOCAL_PLAYER:WaitForChild("PlayerGui", 5)
+    if not playerGui then
+        return
+    end
+
+    activeBlurCount = activeBlurCount + 1
+    AntiMod.updateGlobalBlur()
+
+    local notificationScreenGui = Instance.new("ScreenGui")
+    notificationScreenGui.Name = "CustomModNotification_" .. os.time() .. "_" .. offsetIndex
+    notificationScreenGui.DisplayOrder = 1000 + offsetIndex
+    notificationScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+    notificationScreenGui.Enabled = true
+    notificationScreenGui.Parent = playerGui
+
+    local notificationFrame = Instance.new("Frame")
+    notificationFrame.Size = UDim2.new(0, SCALED_DIMENSIONS.FRAME_WIDTH, 0, SCALED_DIMENSIONS.FRAME_HEIGHT)
+    notificationFrame.AnchorPoint = Vector2.new(1, 1)
+    notificationFrame.Position = UDim2.new(1, -SCALED_DIMENSIONS.PADDING_HORIZONTAL, 1, -(SCALED_DIMENSIONS.PADDING_VERTICAL + (offsetIndex * (SCALED_DIMENSIONS.FRAME_HEIGHT + SCALED_DIMENSIONS.PADDING_VERTICAL))))
+    notificationFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    notificationFrame.BackgroundTransparency = 1
+    notificationFrame.BorderSizePixel = 0
+    notificationFrame.ClipsDescendants = true
+    notificationFrame.Parent = notificationScreenGui
+
+    local uiCorner = Instance.new("UICorner")
+    uiCorner.CornerRadius = SCALED_DIMENSIONS.UI_CORNER_RADIUS
+    uiCorner.Parent = notificationFrame
+
+    local avatarImage = Instance.new("ImageLabel")
+    avatarImage.Size = UDim2.new(0, SCALED_DIMENSIONS.AVATAR_SIZE, 0, SCALED_DIMENSIONS.AVATAR_SIZE)
+    avatarImage.Position = UDim2.new(0, SCALED_DIMENSIONS.AVATAR_OFFSET_LEFT, 0.5, -SCALED_DIMENSIONS.AVATAR_CENTER_Y_OFFSET)
+    avatarImage.AnchorPoint = Vector2.new(0, 0.5)
+    avatarImage.BackgroundTransparency = 1
+    avatarImage.Image = thumbnailUrl
+    avatarImage.Parent = notificationFrame
+    
+    local avatarCorner = Instance.new("UICorner")
+    avatarCorner.CornerRadius = UDim.new(0.5, 0)
+    avatarCorner.Parent = avatarImage
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, -SCALED_DIMENSIONS.TITLE_X_OFFSET, 0, SCALED_DIMENSIONS.TITLE_AREA_HEIGHT)
+    titleLabel.Position = UDim2.new(0, SCALED_DIMENSIONS.TITLE_X_OFFSET, 0, SCALED_DIMENSIONS.TITLE_Y_OFFSET)
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.TextYAlignment = Enum.TextYAlignment.Top
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleLabel.TextScaled = true
+    titleLabel.Font = Enum.Font.SourceSansBold
+    titleLabel.TextStrokeTransparency = 0.8
+    titleLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    titleLabel.Text = title
+    titleLabel.Parent = notificationFrame
+
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(1, -SCALED_DIMENSIONS.DETAILS_X_OFFSET, 0, SCALED_DIMENSIONS.DETAILS_AREA_HEIGHT)
+    textLabel.Position = UDim2.new(0, SCALED_DIMENSIONS.DETAILS_X_OFFSET, 0, SCALED_DIMENSIONS.TITLE_Y_OFFSET + SCALED_DIMENSIONS.TITLE_AREA_HEIGHT + SCALED_DIMENSIONS.DETAILS_Y_OFFSET)
+    textLabel.TextXAlignment = Enum.TextXAlignment.Left
+    textLabel.TextYAlignment = Enum.TextYAlignment.Top
+    textLabel.BackgroundTransparency = 1
+    textLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    textLabel.TextScaled = true
+    textLabel.Font = Enum.Font.SourceSans
+    textLabel.TextStrokeTransparency = 0.8
+    textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    textLabel.Text = text
+    textLabel.Parent = notificationFrame
+
+    titleLabel.TextTransparency = 1
+    textLabel.TextTransparency = 1
+    avatarImage.ImageTransparency = 1
+
+    local fadeInTweenInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local fadeOutTweenInfo = TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+    local fadeInTweens = {
+        TweenService:Create(notificationFrame, fadeInTweenInfo, {BackgroundTransparency = 1 - CONFIG.NOTIFICATION_BACKGROUND_OPACITY}),
+        TweenService:Create(titleLabel, fadeInTweenInfo, {TextTransparency = 0}),
+        TweenService:Create(textLabel, fadeInTweenInfo, {TextTransparency = 0}),
+        TweenService:Create(avatarImage, fadeInTweenInfo, {ImageTransparency = 0})
+    }
+    
+    local fadeOutTweens = {
+        TweenService:Create(notificationFrame, fadeOutTweenInfo, {BackgroundTransparency = 1}),
+        TweenService:Create(titleLabel, fadeOutTweenInfo, {TextTransparency = 1}),
+        TweenService:Create(textLabel, fadeOutTweenInfo, {TextTransparency = 1}),
+        TweenService:Create(avatarImage, fadeOutTweenInfo, {ImageTransparency = 1})
+    }
+
+    for _, tween in ipairs(fadeInTweens) do tween:Play() end
+    fadeInTweens[1].Completed:Wait()
+
+    local visibleDuration = math.max(0, duration - fadeInTweenInfo.Time - fadeOutTweenInfo.Time)
+    task.wait(visibleDuration)
+
+    for _, tween in ipairs(fadeOutTweens) do tween:Play() end
+    fadeOutTweens[1].Completed:Wait()
+    
+    notificationScreenGui:Destroy()
+
+    activeBlurCount = activeBlurCount - 1
+    AntiMod.updateGlobalBlur()
+end
+
+local function getThumbnailUrl(userId)
+    local thumbnailUrl = "rbxassetid://6253457200"
+    local thumbSuccess, thumbResult = pcall(function()
+        return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+    end)
+    if thumbSuccess and thumbResult then
+        thumbnailUrl = thumbResult
+    end
+    return thumbnailUrl
+end
+
+function AntiMod.handlePlayer(player: Player)
+    task.wait(0.1)
+
+    if player.UserId == LOCAL_PLAYER.UserId then
+        return
+    end
+
+    local isPlayerMonitored, _, _, _ = AntiMod.isMemberOfMonitoredGroup(player)
+
+    if isPlayerMonitored then
+        if not onlineMods[player.UserId] then
+            onlineMods[player.UserId] = player
+            local messageParts = {}
+            if CONFIG.SHOW_DISPLAY_NAME then
+                table.insert(messageParts, "display: " .. player.DisplayName)
+            end
+            if CONFIG.SHOW_MOD_ID then
+                table.insert(messageParts, "mod id: " .. player.UserId)
+            end
+            local message = table.concat(messageParts, "\n")
+            
+            local thumbnailUrl = getThumbnailUrl(player.UserId)
+
+            task.spawn(function()
+                AntiMod.showCustomNotification("MOD JOINED (1)", message, thumbnailUrl, CONFIG.MOD_JOINED_NOTIFICATION_DURATION, 0)
+            end)
+            task.wait(0.7)
+            task.spawn(function()
+                AntiMod.showCustomNotification("MOD JOINED (2)", message, thumbnailUrl, CONFIG.MOD_JOINED_NOTIFICATION_DURATION, 1)
+            end)
+        end
+    else
+        if onlineMods[player.UserId] then
+            onlineMods[player.UserId] = nil
+        end
+    end
+end
+
+function AntiMod.handlePlayerRemoving(player: Player)
+    if player.UserId == LOCAL_PLAYER.UserId then return end
+
+    if onlineMods[player.UserId] then
+        onlineMods[player.UserId] = nil
+
+        local messageParts = {}
+        if CONFIG.SHOW_DISPLAY_NAME then
+            table.insert(messageParts, "display: " .. player.DisplayName)
+        end
+        if CONFIG.SHOW_MOD_ID then
+            table.insert(messageParts, "mod id: " .. player.UserId)
+        end
+        local message = table.concat(messageParts, "\n")
+        
+        local thumbnailUrl = getThumbnailUrl(player.UserId)
+
+        task.spawn(function()
+            AntiMod.showCustomNotification("MOD LEFT", message, thumbnailUrl, CONFIG.MOD_LEFT_NOTIFICATION_DURATION, 0)
+        end)
+    end
+end
+
+function AntiMod.showStartupMessage()
+    local playerGui = LOCAL_PLAYER:WaitForChild("PlayerGui", 5)
+    if not playerGui then return end
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AntiModStartupMessage"
+    screenGui.DisplayOrder = 999
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+    screenGui.Enabled = true
+    screenGui.Parent = playerGui
+
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Name = "NossMessage"
+    textLabel.Size = UDim2.new(0, 150, 0, 20)
+    textLabel.Position = UDim2.new(0.5, 0, 0.86, 0)
+    textLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = "ANTIMOD MADE BY NOSS"
+    textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    textLabel.TextScaled = true
+    textLabel.Font = Enum.Font.SourceSansBold
+    textLabel.TextStrokeTransparency = 0
+    textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    textLabel.Parent = screenGui
+    
+    textLabel.TextTransparency = 1 
+
+    local fadeInInfo = TweenInfo.new(CONFIG.STARTUP_MESSAGE_FADE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local fadeOutInfo = TweenInfo.new(CONFIG.STARTUP_MESSAGE_FADE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+    local fadeInTween = TweenService:Create(textLabel, fadeInInfo, {TextTransparency = 0})
+    local fadeOutTween = TweenService:Create(textLabel, fadeOutInfo, {TextTransparency = 1})
+
+    fadeInTween:Play()
+    fadeInTween.Completed:Wait()
+
+    task.wait(CONFIG.STARTUP_MESSAGE_DURATION)
+
+    fadeOutTween:Play()
+    fadeOutTween.Completed:Wait()
+
+    if screenGui and screenGui.Parent then
+        screenGui:Destroy()
+    end
+end
+
+function AntiMod.getOnlineMonitoredMembersDetails(): (number, {string})
+    local modCount = 0
+    local modNames = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LOCAL_PLAYER then
+            local isPlayerMonitored, _, _, _ = AntiMod.isMemberOfMonitoredGroup(player)
+            if isPlayerMonitored then
+                modCount = modCount + 1
+                table.insert(modNames, player.DisplayName or player.Name)
+            end
+        end
+    end
+    return modCount, modNames
+end
+
+local isModCountMessageShowing = false
+
+function AntiMod.showModCountNotification()
+    if isModCountMessageShowing then 
+        return 
+    end
+    isModCountMessageShowing = true
+
+    task.spawn(function()
+        local modCount, modNames = AntiMod.getOnlineMonitoredMembersDetails()
+        local message = "Total Mods: " .. modCount
+        
+        if modCount > 0 then
+            local displayNames = {}
+            for i = 1, math.min(modCount, CONFIG.MAX_NAMES_IN_COUNT_NOTIFICATION) do
+                table.insert(displayNames, modNames[i])
+            end
+            message = message .. "\n" .. table.concat(displayNames, ", ")
+            if modCount > CONFIG.MAX_NAMES_IN_COUNT_NOTIFICATION then
+                message = message .. ", ..."
+            end
+        else
+            message = message .. "\nNone detected."
+        end
+        
+        local thumbnailUrl = "rbxassetid://6253457200"
+        
+        AntiMod.showCustomNotification("MODS ONLINE", message, thumbnailUrl, CONFIG.MOD_COUNT_NOTIFICATION_DURATION, 0) 
+
+        isModCountMessageShowing = false
+    end)
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
+    if not gameProcessedEvent and input.KeyCode == Enum.KeyCode.N then
+        AntiMod.showModCountNotification()
+    end
+end)
+
+local GameExploits = {}
+
+local activeConnections = {}
+
+local function ensureCharacterOwnership()
+    if LOCAL_PLAYER.Character then
+        for _, part in ipairs(LOCAL_PLAYER.Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                pcall(function() part:SetNetworkOwner(LOCAL_PLAYER) end)
+            end
+        end
+    end
+end
+
+function GameExploits.optimizeGameEnvironment()
+    task.setRenderThrottle(0)
+    task.setPhysicsThrottle(0)
+
+    local function applyOptimizations(obj)
+        if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
+            pcall(function() obj:Destroy() end)
+        elseif obj:IsA("Sound") then
+            pcall(function() obj:Stop() end)
+        elseif obj:IsA("BasePart") then
+            local char = LOCAL_PLAYER.Character
+            local isCharPart = char and (obj.Parent == char or obj:IsDescendantOf(char))
+            local isToolPart = obj.Parent and obj.Parent:IsA("Tool")
+
+            if not isCharPart and not isToolPart then
+                pcall(function() obj:SetNetworkOwner(nil) end)
+            end
+
+            if obj.Anchored and not isCharPart and not isToolPart then
+                pcall(function() obj.CanCollide = false end)
+                pcall(function() obj.CanTouch = false end)
+                pcall(function() obj.CanQuery = false end)
+                if obj:IsA("MeshPart") and obj.CollisionFidelity ~= Enum.CollisionFidelity.Box then
+                    pcall(function() obj.CollisionFidelity = Enum.CollisionFidelity.Box end)
+                end
+            end
+        end
+    end
+
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        applyOptimizations(obj)
+    end
+
+    table.insert(activeConnections, workspace.DescendantAdded:Connect(applyOptimizations))
+
+    ensureCharacterOwnership()
+    table.insert(activeConnections, LOCAL_PLAYER.CharacterAdded:Connect(ensureCharacterOwnership))
+end
+
+function GameExploits.setupRemoteSpy()
+    local servicesToScan = {
+        game:GetService("ReplicatedStorage"),
+        game:GetService("Workspace"),
+        LOCAL_PLAYER:WaitForChild("PlayerGui", 5),
+        game:GetService("StarterPack"),
+        game:GetService("StarterGui"),
+    }
+
+    local function hookRemote(remote)
+        if remote:IsA("RemoteEvent") then
+            table.insert(activeConnections, remote.OnClientEvent:Connect(function(...)
+            end))
+        elseif remote:IsA("RemoteFunction") then
+            local oldOnClientInvoke = remote.OnClientInvoke
+            remote.OnClientInvoke = function(...)
+                if typeof(oldOnClientInvoke) == "function" then
+                    return oldOnClientInvoke(...)
+                else
+                    return nil
+                end
+            end
+        end
+    end
+
+    for _, service in ipairs(servicesToScan) do
+        if service then
+            for _, obj in ipairs(service:GetDescendants()) do
+                if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+                    hookRemote(obj)
+                end
+            end
+        end
+    end
+
+    local function monitorService(service)
+        if service then
+            table.insert(activeConnections, service.DescendantAdded:Connect(function(newObj)
+                if newObj:IsA("RemoteEvent") or newObj:IsA("RemoteFunction") then
+                    hookRemote(newObj)
+                end
+            end))
+        end
+    end
+
+    for _, service in ipairs(servicesToScan) do
+        monitorService(service)
+    end
+end
+
+local autoShootEnabled = true
+local canShoot = true
+local gunEvent = nil
+
+function GameExploits.setupAutoShoot()
+    local playerGui = LOCAL_PLAYER:WaitForChild("PlayerGui", 5)
+    if not playerGui then
+        autoShootEnabled = false
+        return
+    end
+
+    local success, eventRef = pcall(function()
+        return playerGui:WaitForChild("F", 10):WaitForChild("gunevent", 10)
+    end)
+
+    if success and eventRef and eventRef:IsA("RemoteEvent") then
+        gunEvent = eventRef
+    else
+        autoShootEnabled = false
+        return
+    end
+
+    local function forceShoot()
+        if autoShootEnabled and canShoot and gunEvent then
+            canShoot = false
+            pcall(function() gunEvent:FireServer("shot") end)
+            task.delay(CONFIG.AUTO_SHOOT_DELAY, function()
+                canShoot = true
+            end)
+        end
+    end
+
+    table.insert(activeConnections, UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            forceShoot()
+        end
+    end))
+end
+
+task.spawn(AntiMod.showStartupMessage)
+
+table.insert(activeConnections, Players.PlayerAdded:Connect(AntiMod.handlePlayer))
+table.insert(activeConnections, Players.PlayerRemoving:Connect(AntiMod.handlePlayerRemoving))
+
+task.spawn(function()
+    for _, player in ipairs(Players:GetPlayers()) do
+        AntiMod.handlePlayer(player)
+    end
+end)
+
+task.spawn(function()
+    task.wait(2)
+
+    GameExploits.optimizeGameEnvironment()
+    GameExploits.setupRemoteSpy()
+    GameExploits.setupAutoShoot()
+end)
+
+local function cleanup()
+    for _, conn in ipairs(activeConnections) do
+        if conn and typeof(conn.Disconnect) == "function" then
+            conn:Disconnect()
+        end
+    end
+    activeBlurCount = 0
+    AntiMod.updateGlobalBlur()
+    
+    if blurTween then
+        blurTween:Cancel()
+    end
+    if LOCAL_PLAYER and LOCAL_PLAYER.PlayerGui then
+        for _, child in ipairs(LOCAL_PLAYER.PlayerGui:GetChildren()) do
+            if string.find(child.Name, "CustomModNotification_") or child.Name == "AntiModStartupMessage" then
+                child:Destroy()
+            end
+        end
+    end
+end
