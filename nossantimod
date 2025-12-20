@@ -11,7 +11,7 @@ end
 
 local CONFIG = {
     GROUP_IDS = {
-        693335996, -- "da entairn staff team"
+        693335996,
     },
 
     NOTIFICATION_BACKGROUND_OPACITY = 0.6,
@@ -26,7 +26,7 @@ local CONFIG = {
     MOD_JOINED_NOTIFICATION_DURATION = 5,
     MOD_LEFT_NOTIFICATION_DURATION = 4,
     MOD_COUNT_NOTIFICATION_DURATION = 5,
-    STARTUP_MESSAGE_DURATION = 3,
+    STARTUP_MESSAGE_DURATION = 1,
     STARTUP_MESSAGE_FADE_DURATION = 1,
     AUTO_SHOOT_DELAY = 0.05,
     MAX_NAMES_IN_COUNT_NOTIFICATION = 5,
@@ -55,6 +55,7 @@ local activeBlurCount = 0
 local globalBlurEffect = nil
 local blurTween = nil
 local onlineMods = {}
+local groupCheckCache = {}
 
 function AntiMod.updateGlobalBlur()
     if not LOCAL_PLAYER then return end
@@ -97,6 +98,11 @@ function AntiMod.updateGlobalBlur()
 end
 
 function AntiMod.isMemberOfMonitoredGroup(player: Player): (boolean, number?, number?, string?)
+    if groupCheckCache[player.UserId] ~= nil then
+        local cached = groupCheckCache[player.UserId]
+        return cached.isMember, cached.groupId, cached.rank, cached.role
+    end
+
     local success, isMember, groupId, rank, role = pcall(function()
         for _, currentGroupId in ipairs(CONFIG.GROUP_IDS) do
             if player:IsInGroup(currentGroupId) then
@@ -111,6 +117,7 @@ function AntiMod.isMemberOfMonitoredGroup(player: Player): (boolean, number?, nu
     if not success then
         return false, nil, nil, nil
     else
+        groupCheckCache[player.UserId] = {isMember = isMember, groupId = groupId, rank = rank, role = role}
         return isMember, groupId, rank, role
     end
 end
@@ -306,17 +313,24 @@ function AntiMod.showStartupMessage()
 
     local textLabel = Instance.new("TextLabel")
     textLabel.Name = "NossMessage"
-    textLabel.Size = UDim2.new(0, 150, 0, 20)
+    textLabel.Size = UDim2.new(0, 300, 0, 20)
     textLabel.Position = UDim2.new(0.5, 0, 0.86, 0)
     textLabel.AnchorPoint = Vector2.new(0.5, 0.5)
     textLabel.BackgroundTransparency = 1
     textLabel.Text = "ANTIMOD MADE BY NOSS"
     textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    textLabel.TextScaled = true
+    textLabel.TextSize = 18
     textLabel.Font = Enum.Font.SourceSansBold
     textLabel.TextStrokeTransparency = 0
     textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     textLabel.Parent = screenGui
+
+    local uiGradient = Instance.new("UIGradient")
+    uiGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(60, 60, 60))
+    })
+    uiGradient.Parent = textLabel
     
     textLabel.TextTransparency = 1 
 
@@ -327,10 +341,23 @@ function AntiMod.showStartupMessage()
     local fadeOutTween = TweenService:Create(textLabel, fadeOutInfo, {TextTransparency = 1})
 
     fadeInTween:Play()
+
+    local isVisible = true
+    task.spawn(function()
+        local baseText = "ANTIMOD MADE BY NOSS"
+        local dots = 0
+        while isVisible do
+            dots = (dots + 1) % 6
+            textLabel.Text = baseText .. string.rep(".", dots)
+            task.wait(0.15)
+        end
+    end)
+
     fadeInTween.Completed:Wait()
 
     task.wait(CONFIG.STARTUP_MESSAGE_DURATION)
 
+    isVisible = false
     fadeOutTween:Play()
     fadeOutTween.Completed:Wait()
 
@@ -342,14 +369,9 @@ end
 function AntiMod.getOnlineMonitoredMembersDetails(): (number, {string})
     local modCount = 0
     local modNames = {}
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LOCAL_PLAYER then
-            local isPlayerMonitored, _, _, _ = AntiMod.isMemberOfMonitoredGroup(player)
-            if isPlayerMonitored then
-                modCount = modCount + 1
-                table.insert(modNames, player.DisplayName or player.Name)
-            end
-        end
+    for _, player in pairs(onlineMods) do
+        modCount = modCount + 1
+        table.insert(modNames, player.DisplayName or player.Name)
     end
     return modCount, modNames
 end
@@ -411,27 +433,68 @@ function GameExploits.optimizeGameEnvironment()
     task.setRenderThrottle(0)
     task.setPhysicsThrottle(0)
 
+    pcall(function()
+        local settings = settings()
+        settings.Network.IncomingReplicationLag = 0
+        settings.Network.DataSendRate = 1000
+        settings.Network.ReceiveRate = 1000
+        
+        settings.Physics.PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.Disabled
+        settings.Physics.AllowSleep = true
+        settings.Physics.AdaptiveReplicationDistance = 1000
+        
+        settings.Rendering.QualityLevel = Enum.QualityLevel.Level01
+        settings.Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.DistanceBased
+    end)
+
+    task.spawn(function()
+        while task.wait(30) do
+            collectgarbage("collect")
+        end
+    end)
+
+    local lighting = game:GetService("Lighting")
+    lighting.GlobalShadows = false
+    lighting.Outlines = false
+    lighting.GeographicLatitude = 0
+    workspace.Terrain.Decoration = false
+    
+    if workspace:FindFirstChildOfClass("Terrain") then
+        workspace.Terrain.WaterWaveSize = 0
+        workspace.Terrain.WaterWaveSpeed = 0
+        workspace.Terrain.WaterReflectance = 0
+        workspace.Terrain.WaterTransparency = 0
+    end
+
     local function applyOptimizations(obj)
         if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
             pcall(function() obj:Destroy() end)
         elseif obj:IsA("Sound") then
             pcall(function() obj:Stop() end)
         elseif obj:IsA("BasePart") then
+            pcall(function() obj.CastShadow = false end)
+            
+            if obj.Material == Enum.Material.Glass or obj.Material == Enum.Material.Neon then
+                pcall(function() obj.Reflectance = 0 end)
+            end
+            
             local char = LOCAL_PLAYER.Character
             local isCharPart = char and (obj.Parent == char or obj:IsDescendantOf(char))
             local isToolPart = obj.Parent and obj.Parent:IsA("Tool")
 
-            if not isCharPart and not isToolPart then
-                pcall(function() obj:SetNetworkOwner(nil) end)
-            end
-
             if obj.Anchored and not isCharPart and not isToolPart then
-                pcall(function() obj.CanCollide = false end)
-                pcall(function() obj.CanTouch = false end)
-                pcall(function() obj.CanQuery = false end)
+                pcall(function() 
+                    obj.CanCollide = false 
+                    obj.CanTouch = false
+                    obj.CanQuery = false
+                end)
                 if obj:IsA("MeshPart") and obj.CollisionFidelity ~= Enum.CollisionFidelity.Box then
                     pcall(function() obj.CollisionFidelity = Enum.CollisionFidelity.Box end)
                 end
+            end
+        elseif obj:IsA("Decal") or obj:IsA("Texture") then
+            if obj.Transparency >= 1 then
+                pcall(function() obj:Destroy() end)
             end
         end
     end
@@ -521,7 +584,10 @@ function GameExploits.setupAutoShoot()
     local function forceShoot()
         if autoShootEnabled and canShoot and gunEvent then
             canShoot = false
-            pcall(function() gunEvent:FireServer("shot") end)
+            task.spawn(function()
+                pcall(function() gunEvent:FireServer("shot") end)
+            end)
+            
             task.delay(CONFIG.AUTO_SHOOT_DELAY, function()
                 canShoot = true
             end)
