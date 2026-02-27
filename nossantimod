@@ -11,7 +11,7 @@ end
 
 local CONFIG = {
     GROUP_IDS = {
-        128056089,
+        811783767,
     },
 
     NOTIFICATION_BACKGROUND_OPACITY = 0.6,
